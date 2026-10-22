@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="id" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ruang Kerja PM</title>
+  <meta name="description" content="Dashboard pribadi untuk Project Manager: proyek, kalender deadline, tim, dan dokumen.">
+  <meta name="theme-color" content="#0E1311">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <script>
+    try {
+      var s = JSON.parse(localStorage.getItem('pm-dashboard-v2') || '{}');
+      if (s.theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    } catch (e) {}
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="top">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/></svg>
+      </span>
+      Ruang Kerja PM
+    </div>
+    <div class="top-right">
+      <nav class="pill-nav" aria-label="Navigasi bagian">
+        <a class="navlink active" href="#ringkasan">Ringkasan</a>
+        <a class="navlink" href="#proyek">Proyek</a>
+        <a class="navlink" href="#kalender">Kalender</a>
+        <a class="navlink" href="#tim">Tim</a>
+        <a class="navlink" href="#dokumen">Dokumen</a>
+      </nav>
+      <button class="icon-btn round" id="theme-btn" data-act="theme" aria-pressed="true" aria-label="Ganti ke mode terang"></button>
+    </div>
+  </header>
+
+  <section id="ringkasan" class="head">
+    <div class="head-text">
+      <div class="muted2 strong" id="today"></div>
+      <h1>Ringkasan pekerjaan</h1>
+      <div class="muted2" id="next"></div>
+    </div>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <section id="pengingat" class="card reminders" aria-labelledby="h-ping">
+    <div class="rem-left">
+      <h2 id="h-ping">Pengingat deadline</h2>
+      <div class="muted small">Tampilkan deadline yang jatuh dalam:</div>
+      <div class="chips" role="group" aria-label="Jendela pengingat" id="lead-chips"></div>
+    </div>
+    <div class="rem-list" id="reminders" role="status"></div>
+  </section>
+
+  <section id="proyek" class="block">
+    <div class="block-head">
+      <h2>Proyek berjalan</h2>
+      <button class="btn" id="btn-projform" data-act="projform" aria-expanded="false">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Proyek baru
+      </button>
+    </div>
+    <form id="form-project" class="card inline-form" hidden>
+      <div class="f grow2"><label for="p-name">Nama proyek</label><input id="p-name" class="field" type="text" placeholder="Contoh: Peluncuran fitur baru" autocomplete="off"></div>
+      <div class="f grow1"><label for="p-due">Deadline</label><input id="p-due" class="field" type="date"></div>
+      <button class="btn" type="submit">Simpan proyek</button>
+      <button class="btn btn-ghost" type="button" data-act="projform">Batal</button>
+    </form>
+    <div id="projects" class="proj-grid"></div>
+  </section>
+
+  <div class="two-col">
+    <section id="kalender" class="card col" aria-labelledby="h-kal">
+      <div class="block-head tight">
+        <h2 id="h-kal">Kalender</h2>
+        <div class="month-nav">
+          <button class="icon-btn" data-act="prev" aria-label="Bulan sebelumnya"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button>
+          <span class="month-label" id="cal-title"></span>
+          <button class="icon-btn" data-act="next" aria-label="Bulan berikutnya"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+        </div>
+      </div>
+      <div class="cal-grid" id="cal-grid"></div>
+      <div class="legend">
+        <span><i class="sw sw-pin"></i>Pin deadline</span>
+        <span><i class="sw sw-due"></i>Deadline proyek</span>
+        <span><i class="sw sw-today"></i>Hari ini</span>
+      </div>
+      <div class="sep">
+        <div class="strong" id="day-title"></div>
+        <div id="day-events" class="list"></div>
+        <form id="form-pin" class="pin-form">
+          <label for="pin-label" class="sr">Keterangan pin</label>
+          <input id="pin-label" class="field" type="text" placeholder="Pin tanggal ini: mis. Deadline laporan" autocomplete="off">
+          <button class="btn" type="submit">Pin</button>
+        </form>
+      </div>
+      <div class="sep">
+        <div class="strong">Deadline mendatang</div>
+        <div id="upcoming" class="list"></div>
+      </div>
+    </section>
+
+    <section id="tim" class="card col" aria-labelledby="h-tim">
+      <div class="block-head tight">
+        <h2 id="h-tim">Tim saya</h2>
+        <span class="muted2 small strong" id="team-count"></span>
+      </div>
+      <form id="form-member" class="soft-form">
+        <div class="f-row">
+          <div class="f grow1"><label for="t-name">Nama</label><input id="t-name" class="field" type="text" placeholder="Nama anggota" autocomplete="off"></div>
+          <div class="f grow1"><label for="t-role">Peran</label><input id="t-role" class="field" type="text" placeholder="Mis. Desainer UI" autocomplete="off"></div>
+        </div>
+        <button class="btn self-start" type="submit">Tambah anggota</button>
+      </form>
+      <div id="team" class="list"></div>
+    </section>
+  </div>
+
+  <section id="dokumen" class="card wide" aria-labelledby="h-dok">
+    <div class="block-head tight">
+      <h2 id="h-dok">Dokumen per proyek</h2>
+      <span class="muted2 small strong" id="doc-count"></span>
+    </div>
+    <div class="doc-layout">
+      <form id="form-doc" class="soft-form doc-form">
+        <div class="strong">Tambah dokumen</div>
+        <div class="f"><label for="d-title">Judul</label><input id="d-title" class="field" type="text" placeholder="Kosongkan untuk pakai nama file" autocomplete="off"></div>
+        <div class="f-row">
+          <div class="f grow1"><label for="d-type">Jenis</label>
+            <select id="d-type" class="field"><option>PRD</option><option>Update</option><option>Lainnya</option></select></div>
+          <div class="f grow1"><label for="d-proj">Proyek</label><select id="d-proj" class="field"></select></div>
+        </div>
+        <div class="f"><label for="d-file">Upload file (maks. 20 MB)</label><input id="d-file" class="field" type="file"></div>
+        <div class="f"><label for="d-url">Atau tautan (opsional)</label><input id="d-url" class="field" type="url" placeholder="https://drive.google.com/…"></div>
+        <div class="f-row center">
+          <button class="btn" type="submit">Simpan dokumen</button>
+          <span class="muted2 small strong" id="doc-msg" role="status"></span>
+        </div>
+        <div class="muted tiny">File tersimpan di browser ini saja, tidak ikut ke perangkat lain.</div>
+      </form>
+      <div class="doc-right">
+        <div class="chips" id="doc-filters" role="group" aria-label="Filter proyek"></div>
+        <div id="doc-groups" class="groups"></div>
+      </div>
+    </div>
+  </section>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

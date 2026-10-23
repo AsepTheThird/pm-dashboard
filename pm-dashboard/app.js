@@ -1,8 +1,9 @@
 (function () {
   'use strict';
 
-  var KEY = 'pm-dashboard-v2';
+  var CFG = window.PM_CONFIG || {};
   var MAX_FILE = 20 * 1048576;
+  var BUCKET = 'documents';
   var MON = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
   var MS = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
   var DAY = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
@@ -28,12 +29,20 @@
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
   function key(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
   function parse(k) { var a = k.split('-').map(Number); return new Date(a[0], a[1] - 1, a[2]); }
-  function uid(p) { return p + Date.now().toString(36) + Math.floor(Math.random() * 46656).toString(36); }
+  function uuid() {
+    if (window.crypto && crypto.randomUUID) { try { return crypto.randomUUID(); } catch (e) {} }
+    var b = new Uint8Array(16);
+    crypto.getRandomValues(b);
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    var h = Array.prototype.map.call(b, function (x) { return (x + 256).toString(16).slice(1); }).join('');
+    return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
+  }
   function fmtSize(n) { return n < 1048576 ? Math.max(1, Math.round(n / 1024)) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
   function initials(name) {
     var p = name.trim().split(/\s+/);
     return (p[0][0] + (p.length > 1 ? p[p.length - 1][0] : '')).toUpperCase();
   }
+  function safeName(n) { return n.replace(/[^A-Za-z0-9._-]+/g, '_').slice(-120) || 'berkas'; }
 
   var todayKey = key(new Date());
   function diff(k) { return Math.round((parse(k) - parse(todayKey)) / 86400000); }
@@ -50,51 +59,83 @@
   /* ---------- state ---------- */
   var now = new Date();
   var S = {
+    user: null,
     theme: 'dark', lead: 3,
     projects: [], pins: [], docs: [], team: [],
     viewY: now.getFullYear(), viewM: now.getMonth(), selected: todayKey,
     openMember: '', docFilter: 'all'
   };
+  try { if (localStorage.getItem('pm-theme') === 'light') S.theme = 'light'; } catch (e) {}
 
-  function load() {
-    try {
-      var raw = localStorage.getItem(KEY);
-      if (!raw) return;
-      var s = JSON.parse(raw);
-      if (s.projects) S.projects = s.projects;
-      if (s.pins) S.pins = s.pins;
-      if (s.docs) S.docs = s.docs;
-      if (s.team) S.team = s.team.map(function (m) { return Object.assign({ projectIds: [] }, m); });
-      if (s.lead) S.lead = s.lead;
-      S.theme = s.theme === 'light' ? 'light' : 'dark';
-    } catch (e) {}
-  }
-  function save() {
-    try {
-      localStorage.setItem(KEY, JSON.stringify({
-        projects: S.projects, pins: S.pins, docs: S.docs, team: S.team, lead: S.lead, theme: S.theme
-      }));
-    } catch (e) {}
+  /* ---------- Supabase ---------- */
+  var sb = null;
+  if (window.supabase && CFG.url && CFG.key) {
+    sb = window.supabase.createClient(CFG.url, CFG.key, { auth: { persistSession: true, autoRefreshToken: true } });
   }
 
-  /* ---------- file storage (IndexedDB) ---------- */
-  function dbOpen() {
-    return new Promise(function (res, rej) {
-      var r = indexedDB.open('pm-files', 1);
-      r.onupgradeneeded = function () { r.result.createObjectStore('f'); };
-      r.onsuccess = function () { res(r.result); };
-      r.onerror = function () { rej(r.error); };
+  var toastTimer;
+  function toast(t) {
+    var el = $('#toast');
+    el.textContent = t; el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.hidden = true; }, 6000);
+  }
+  function errText(e) { return (e && e.message) ? e.message : String(e); }
+
+  // Jalankan operasi database. Kalau gagal: tampilkan pesan, lalu muat ulang dari server
+  // supaya tampilan kembali sesuai data yang sebenarnya.
+  function run(builder) {
+    return Promise.resolve(builder).then(function (r) {
+      if (r && r.error) throw r.error;
+      return r ? r.data : null;
+    }).catch(function (e) {
+      toast('Gagal menyimpan: ' + errText(e));
+      return loadAll().catch(function () {}).then(function () { return null; });
     });
   }
-  function dbOp(mode, fn) {
-    return dbOpen().then(function (db) {
-      return new Promise(function (res, rej) {
-        var tx = db.transaction('f', mode);
-        var req = fn(tx.objectStore('f'));
-        tx.oncomplete = function () { res(req ? req.result : undefined); };
-        tx.onerror = function () { rej(tx.error); };
+
+  function loadAll() {
+    return Promise.all([
+      sb.from('projects').select('*').order('created_at'),
+      sb.from('pins').select('*').order('date'),
+      sb.from('team_members').select('*').order('created_at'),
+      sb.from('project_members').select('project_id,member_id'),
+      sb.from('documents').select('*').order('created_at', { ascending: false }),
+      sb.from('settings').select('*').maybeSingle()
+    ]).then(function (r) {
+      for (var i = 0; i < r.length; i++) if (r[i].error) throw r[i].error;
+      S.projects = r[0].data.map(function (p) {
+        return { id: p.id, name: p.name, due: p.due, progress: p.progress, status: p.status, tone: p.tone };
       });
+      S.pins = r[1].data.map(function (p) { return { id: p.id, date: p.date, label: p.label }; });
+      var links = r[3].data;
+      S.team = r[2].data.map(function (m) {
+        return {
+          id: m.id, name: m.name, role: m.role || '',
+          projectIds: links.filter(function (l) { return l.member_id === m.id; }).map(function (l) { return l.project_id; })
+        };
+      });
+      S.docs = r[4].data.map(function (d) {
+        return {
+          id: d.id, title: d.title, type: d.type, projectId: d.project_id || '', url: d.url || '',
+          file: d.file_path ? { name: d.file_name || 'berkas', size: d.file_size || 0, path: d.file_path } : null,
+          added: key(new Date(d.created_at))
+        };
+      });
+      if (r[5].data) {
+        S.lead = r[5].data.lead_days;
+        S.theme = r[5].data.theme === 'light' ? 'light' : 'dark';
+        try { localStorage.setItem('pm-theme', S.theme); } catch (e) {}
+      }
+      renderAll();
     });
+  }
+
+  function saveSettings() {
+    try { localStorage.setItem('pm-theme', S.theme); } catch (e) {}
+    return run(sb.from('settings').upsert({
+      user_id: S.user.id, lead_days: S.lead, theme: S.theme, updated_at: new Date().toISOString()
+    }));
   }
 
   /* ---------- derived data ---------- */
@@ -263,13 +304,15 @@
         .sort(function (a, b) { return (TYPE_ORDER[a.d.type] - TYPE_ORDER[b.d.type]) || (a.i - b.i); })
         .map(function (x) { return x.d; });
     }
+    function safeUrl(u) { return /^https?:\/\//i.test(u) ? u : ''; }
     function docRow(d) {
       var meta = short(d.added) + (d.file ? ' · ' + esc(d.file.name) + ' (' + fmtSize(d.file.size) + ')' : '');
       var tcls = d.type === 'PRD' ? ' prd' : d.type === 'Update' ? ' upd' : '';
+      var url = safeUrl(d.url);
       return '<div class="doc"><span class="type' + tcls + '">' + esc(d.type) + '</span>' +
         '<div class="info"><b>' + esc(d.title) + '</b><span>' + meta + '</span></div>' +
         (d.file ? '<button class="icon-btn" data-act="doc-down" data-id="' + d.id + '" aria-label="Unduh ' + esc(d.title) + '">' + ICON.down + '</button>' : '') +
-        (d.url ? '<a class="icon-btn" href="' + esc(d.url) + '" target="_blank" rel="noopener noreferrer" aria-label="Buka tautan ' + esc(d.title) + '">' + ICON.link + '</a>' : '') +
+        (url ? '<a class="icon-btn" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" aria-label="Buka tautan ' + esc(d.title) + '">' + ICON.link + '</a>' : '') +
         '<button class="icon-btn" data-act="doc-del" data-id="' + d.id + '" aria-label="Hapus dokumen ' + esc(d.title) + '">' + ICON.x + '</button></div>';
     }
     var out = '';
@@ -295,24 +338,27 @@
   function renderAll() {
     renderTheme(); renderHead(); renderReminders(); renderProjects(); renderCalendar(); renderTeam(); renderDocs();
   }
-  function commit() { save(); renderAll(); }
 
   /* ---------- actions ---------- */
   function setView(date) {
     var d = parse(date);
     S.selected = date; S.viewY = d.getFullYear(); S.viewM = d.getMonth();
   }
-  function patchProject(id, fn) {
-    S.projects = S.projects.map(function (p) { return p.id === id ? fn(p) : p; });
+  function findProject(id) { return S.projects.filter(function (p) { return p.id === id; })[0]; }
+  function patchProject(id, patch) {
+    S.projects = S.projects.map(function (p) { return p.id === id ? Object.assign({}, p, patch) : p; });
+    renderAll();
+    run(sb.from('projects').update(patch).eq('id', id));
   }
 
   document.addEventListener('click', function (e) {
     var t = e.target.closest('[data-act]');
-    if (!t) return;
+    if (!t || !S.user && t.getAttribute('data-act') !== 'logout') return;
     var act = t.getAttribute('data-act'), id = t.getAttribute('data-id'), date = t.getAttribute('data-date');
     switch (act) {
-      case 'theme': S.theme = S.theme === 'dark' ? 'light' : 'dark'; commit(); break;
-      case 'lead': S.lead = Number(t.getAttribute('data-v')); commit(); break;
+      case 'logout': sb.auth.signOut(); break;
+      case 'theme': S.theme = S.theme === 'dark' ? 'light' : 'dark'; renderTheme(); saveSettings(); break;
+      case 'lead': S.lead = Number(t.getAttribute('data-v')); renderAll(); saveSettings(); break;
       case 'projform':
         var f = $('#form-project'); f.hidden = !f.hidden;
         $('#btn-projform').setAttribute('aria-expanded', String(!f.hidden));
@@ -323,35 +369,49 @@
         S.docs = S.docs.map(function (d) { return d.projectId === id ? Object.assign({}, d, { projectId: '' }) : d; });
         S.team = S.team.map(function (m) { return Object.assign({}, m, { projectIds: m.projectIds.filter(function (x) { return x !== id; }) }); });
         if (S.docFilter === id) S.docFilter = 'all';
-        commit(); break;
+        renderAll();
+        run(sb.from('projects').delete().eq('id', id));
+        break;
       case 'proj-status':
-        patchProject(id, function (p) { return Object.assign({}, p, { status: STATUSES[(STATUSES.indexOf(p.status) + 1) % STATUSES.length] }); });
-        commit(); break;
-      case 'proj-inc': patchProject(id, function (p) { return Object.assign({}, p, { progress: Math.min(100, p.progress + 10) }); }); commit(); break;
-      case 'proj-dec': patchProject(id, function (p) { return Object.assign({}, p, { progress: Math.max(0, p.progress - 10) }); }); commit(); break;
+        var p0 = findProject(id);
+        if (p0) patchProject(id, { status: STATUSES[(STATUSES.indexOf(p0.status) + 1) % STATUSES.length] });
+        break;
+      case 'proj-inc': var p1 = findProject(id); if (p1) patchProject(id, { progress: Math.min(100, p1.progress + 10) }); break;
+      case 'proj-dec': var p2 = findProject(id); if (p2) patchProject(id, { progress: Math.max(0, p2.progress - 10) }); break;
       case 'prev': S.viewM -= 1; if (S.viewM < 0) { S.viewM = 11; S.viewY -= 1; } renderCalendar(); break;
       case 'next': S.viewM += 1; if (S.viewM > 11) { S.viewM = 0; S.viewY += 1; } renderCalendar(); break;
       case 'pick': S.selected = date; renderCalendar(); break;
       case 'jump': setView(date); renderCalendar(); $('#kalender').scrollIntoView({ behavior: 'smooth', block: 'start' }); break;
-      case 'pin-del': S.pins = S.pins.filter(function (k) { return k.id !== id; }); commit(); break;
-      case 'member-del': S.team = S.team.filter(function (m) { return m.id !== id; }); commit(); break;
+      case 'pin-del':
+        S.pins = S.pins.filter(function (k) { return k.id !== id; });
+        renderAll();
+        run(sb.from('pins').delete().eq('id', id));
+        break;
+      case 'member-del':
+        S.team = S.team.filter(function (m) { return m.id !== id; });
+        renderAll();
+        run(sb.from('team_members').delete().eq('id', id));
+        break;
       case 'member-open': S.openMember = S.openMember === id ? '' : id; renderTeam(); break;
       case 'filter': S.docFilter = id; renderDocs(); break;
       case 'doc-del':
         var doc = S.docs.filter(function (d) { return d.id === id; })[0];
-        if (doc && doc.file) dbOp('readwrite', function (st) { return st.delete(doc.file.key); }).catch(function () {});
         S.docs = S.docs.filter(function (d) { return d.id !== id; });
-        commit(); break;
+        renderAll();
+        run(sb.from('documents').delete().eq('id', id)).then(function () {
+          if (doc && doc.file) sb.storage.from(BUCKET).remove([doc.file.path]).catch(function () {});
+        });
+        break;
       case 'doc-down':
         var dd = S.docs.filter(function (d) { return d.id === id; })[0];
         if (!dd || !dd.file) break;
-        dbOp('readonly', function (st) { return st.get(dd.file.key); }).then(function (blob) {
-          if (!blob) { msg('File tidak ditemukan di browser ini.'); return; }
-          var u = URL.createObjectURL(blob), a = document.createElement('a');
+        sb.storage.from(BUCKET).download(dd.file.path).then(function (r) {
+          if (r.error || !r.data) throw (r.error || new Error('kosong'));
+          var u = URL.createObjectURL(r.data), a = document.createElement('a');
           a.href = u; a.download = dd.file.name;
           document.body.appendChild(a); a.click(); document.body.removeChild(a);
           setTimeout(function () { URL.revokeObjectURL(u); }, 4000);
-        }).catch(function () { msg('Gagal membuka file.'); });
+        }).catch(function (err) { msg('Gagal membuka file: ' + errText(err)); });
         break;
     }
   });
@@ -359,14 +419,17 @@
   document.addEventListener('change', function (e) {
     var t = e.target;
     if (t.getAttribute && t.getAttribute('data-act') === 'assign') {
-      var mid = t.getAttribute('data-id'), pid = t.getAttribute('data-pid');
+      var mid = t.getAttribute('data-id'), pid = t.getAttribute('data-pid'), on = t.checked;
       S.team = S.team.map(function (m) {
         if (m.id !== mid) return m;
         var ids = m.projectIds.filter(function (x) { return x !== pid; });
-        if (t.checked) ids.push(pid);
+        if (on) ids.push(pid);
         return Object.assign({}, m, { projectIds: ids });
       });
-      save(); renderHead(); renderProjects(); renderTeam();
+      renderHead(); renderProjects(); renderTeam();
+      run(on
+        ? sb.from('project_members').insert({ project_id: pid, member_id: mid })
+        : sb.from('project_members').delete().eq('project_id', pid).eq('member_id', mid));
     }
     if (t.id === 'd-file' && t.files && t.files[0] && t.files[0].size > MAX_FILE) {
       t.value = ''; msg('File terlalu besar (maks. 20 MB).');
@@ -377,30 +440,35 @@
     e.preventDefault();
     var name = $('#p-name').value.trim(), due = $('#p-due').value;
     if (!name || !due) return;
-    S.projects.push({ id: uid('p'), name: name, due: due, progress: 0, status: 'Perencanaan', tone: S.projects.length % 4 });
+    var p = { id: uuid(), name: name, due: due, progress: 0, status: 'Perencanaan', tone: S.projects.length % 4 };
+    S.projects.push(p);
     $('#p-name').value = '';
     this.hidden = true; $('#btn-projform').setAttribute('aria-expanded', 'false');
-    commit();
+    renderAll();
+    run(sb.from('projects').insert(p));
   });
 
   $('#form-pin').addEventListener('submit', function (e) {
     e.preventDefault();
     var label = $('#pin-label').value.trim();
     if (!label) return;
-    S.pins.push({ id: uid('k'), date: S.selected, label: label });
+    var pin = { id: uuid(), date: S.selected, label: label };
+    S.pins.push(pin);
     $('#pin-label').value = '';
-    commit();
+    renderAll();
+    run(sb.from('pins').insert(pin));
   });
 
   $('#form-member').addEventListener('submit', function (e) {
     e.preventDefault();
     var name = $('#t-name').value.trim();
     if (!name) return;
-    var id = uid('m');
-    S.team.push({ id: id, name: name, role: $('#t-role').value.trim(), projectIds: [] });
-    S.openMember = S.projects.length ? id : '';
+    var m = { id: uuid(), name: name, role: $('#t-role').value.trim(), projectIds: [] };
+    S.team.push(m);
+    S.openMember = S.projects.length ? m.id : '';
     $('#t-name').value = ''; $('#t-role').value = '';
-    commit();
+    renderAll();
+    run(sb.from('team_members').insert({ id: m.id, name: m.name, role: m.role }));
   });
 
   $('#form-doc').addEventListener('submit', function (e) {
@@ -408,30 +476,97 @@
     var form = this, fileEl = $('#d-file'), file = fileEl.files && fileEl.files[0];
     var title = $('#d-title').value.trim() || (file ? file.name : '');
     if (!title) { msg('Isi judul atau pilih file dulu.'); return; }
-    var doc = {
-      id: uid('d'), title: title, type: $('#d-type').value, projectId: $('#d-proj').value,
-      url: $('#d-url').value.trim(), file: null, added: todayKey
-    };
+    var url = $('#d-url').value.trim();
+    if (url && !/^https?:\/\//i.test(url)) { msg('Tautan harus diawali http:// atau https://'); return; }
+    var id = uuid();
+    var doc = { id: id, title: title, type: $('#d-type').value, projectId: $('#d-proj').value, url: url, file: null, added: todayKey };
+    var row = { id: id, title: title, type: doc.type, project_id: doc.projectId || null, url: url };
+    var btn = form.querySelector('button[type=submit]');
+
     function finish() {
       S.docs.unshift(doc); S.docFilter = 'all';
-      form.reset(); commit(); msg('Tersimpan.');
+      form.reset(); renderAll(); msg('Tersimpan.');
+      return run(sb.from('documents').insert(row));
     }
-    if (file) {
-      var k = uid('f');
-      dbOp('readwrite', function (st) { return st.put(file, k); }).then(function () {
-        doc.file = { name: file.name, size: file.size, key: k };
-        finish();
-      }).catch(function () { msg('Browser menolak menyimpan file. Pakai tautan sebagai gantinya.'); });
-    } else {
-      finish();
-    }
+    if (!file) { finish(); return; }
+
+    var path = S.user.id + '/' + id + '-' + safeName(file.name);
+    btn.disabled = true; msg('Mengunggah…');
+    sb.storage.from(BUCKET).upload(path, file, { contentType: file.type || 'application/octet-stream', upsert: false })
+      .then(function (r) {
+        if (r.error) throw r.error;
+        doc.file = { name: file.name, size: file.size, path: path };
+        row.file_path = path; row.file_name = file.name; row.file_size = file.size;
+        return finish();
+      })
+      .catch(function (err) { msg('Gagal mengunggah: ' + errText(err)); })
+      .then(function () { btn.disabled = false; });
+  });
+
+  /* ---------- auth ---------- */
+  function showLogin(text) {
+    $('#app-main').hidden = true;
+    $('#login').hidden = false;
+    $('#login-msg').textContent = text || '';
+    $('#l-btn').disabled = false;
+  }
+  function showApp() {
+    $('#login').hidden = true;
+    $('#app-main').hidden = false;
+  }
+  function clearData() {
+    S.projects = []; S.pins = []; S.docs = []; S.team = [];
+    S.openMember = ''; S.docFilter = 'all'; S.user = null;
+  }
+  function start(user) {
+    S.user = user;
+    $('#login-msg').textContent = 'Memuat data…';
+    loadAll().then(function () {
+      showApp();
+      $('#form-login').reset();
+    }).catch(function (e) {
+      toast('Gagal memuat data: ' + errText(e));
+      showLogin('Gagal memuat data: ' + errText(e));
+    });
+  }
+
+  $('#form-login').addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!sb) return;
+    var email = $('#l-email').value.trim(), pass = $('#l-pass').value;
+    if (!email || !pass) { $('#login-msg').textContent = 'Isi email dan password.'; return; }
+    $('#l-btn').disabled = true;
+    $('#login-msg').textContent = 'Masuk…';
+    sb.auth.signInWithPassword({ email: email, password: pass }).then(function (r) {
+      if (r.error) {
+        var bad = /invalid|credentials/i.test(r.error.message || '');
+        showLogin(bad ? 'Email atau password salah.' : 'Gagal masuk: ' + errText(r.error));
+        return;
+      }
+      start(r.data.user);
+    }).catch(function (err) { showLogin('Gagal masuk: ' + errText(err)); });
+  });
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && S.user && sb) loadAll().catch(function () {});
   });
 
   /* ---------- boot ---------- */
-  load();
+  renderTheme();
   var due = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 14);
   $('#p-due').value = key(due);
-  renderAll();
+
+  if (!sb) {
+    showLogin('Konfigurasi Supabase belum terisi di config.js.');
+  } else {
+    showLogin('');
+    sb.auth.onAuthStateChange(function (event) {
+      if (event === 'SIGNED_OUT') { clearData(); renderAll(); showLogin('Kamu sudah keluar.'); }
+    });
+    sb.auth.getSession().then(function (r) {
+      if (r.data && r.data.session) start(r.data.session.user);
+    });
+  }
 
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
     window.addEventListener('load', function () {

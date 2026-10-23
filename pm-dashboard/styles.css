@@ -179,6 +179,15 @@ legend{font-size:12px;font-weight:700;color:var(--muted);padding:0 0 4px}
 .doc .info span{font-size:12px;font-weight:600;color:var(--muted);overflow-wrap:anywhere}
 .note{font-size:12px;font-weight:700;color:var(--ink2);padding:2px 8px 8px}
 
+/* login + toast */
+.login{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.login[hidden]{display:none}
+.login-card{width:100%;max-width:400px;display:flex;flex-direction:column;gap:14px;padding:32px}
+.login-card h1{font-size:26px;font-weight:800;letter-spacing:-.02em}
+.login-card p{margin:0;font-size:14px}
+.login-msg{min-height:20px;font-size:13px;font-weight:600;color:var(--ink2);overflow-wrap:anywhere}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:10;max-width:min(92vw,520px);background:var(--btnbg);color:var(--btnfg);padding:12px 18px;border-radius:14px;font-size:14px;font-weight:600;box-shadow:0 12px 30px -10px rgba(0,0,0,.5)}
+
 @media (max-width:560px){
   .app{padding:16px 16px 48px}
   .head h1{font-size:28px}
